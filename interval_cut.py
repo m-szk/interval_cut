@@ -1,14 +1,14 @@
 import argparse
 import os
+import shutil
 import sys
 import subprocess
 import tempfile
 
-
 BLACKDETECT_FILTER = 'blackdetect=d=0.0:pic_th=0.00'
-TEMP_CUT_PREFIX = ".temp.cut."
-TEMP_TRIM_PREFIX = ".temp.trim."
-TEMP_CONCAT_PREFIX = ".temp.concat."
+TEMP_CUT_PREFIX = "temp.cut."
+TEMP_TRIM_PREFIX = "temp.trim."
+TEMP_CONCAT_PREFIX = "temp.concat."
 DEFAULT_AUDIO_FADE_DURATION = 0.05
 FFMPEG_BASE_ARGS = ['ffmpeg', '-y', '-hide_banner', '-nostats']
 FFPROBE_BASE_ARGS = ['ffprobe', '-v', 'error']
@@ -82,29 +82,38 @@ def trim_video(input_path, output_path, quiet=False, vcodec='libx264', crf=23, a
     """動画をトリミング"""
     # 動画内の画面が認識できるフレームでトリミング
     video_start, _ = validate_frames(input_path, quiet=quiet)
-    print(f"Trimming video: {input_path} from frame {video_start} -> {output_path}")
-    ffmpeg_cmd = build_ffmpeg_cmd(quiet) + [
-        '-i', input_path,
-        '-vf', f"trim=start={video_start},setpts=PTS-STARTPTS",
-        '-af', f"atrim=start={video_start},asetpts=PTS-STARTPTS",
-        '-c:v', vcodec,
-        '-crf', str(crf),
-        '-c:a', acodec,
-        output_path
-    ]
-    run_cmd(ffmpeg_cmd, f"Error trimming video {input_path}")
-    print(f"Trimmed video created: {output_path}")
+    if video_start > 0:
+        print(f"Trimming video: {input_path} from frame {video_start} -> {output_path}")
+        ffmpeg_cmd = build_ffmpeg_cmd(quiet) + [
+            '-i', input_path,
+            '-vf', f"trim=start={video_start},setpts=PTS-STARTPTS",
+            '-af', f"atrim=start={video_start},asetpts=PTS-STARTPTS",
+            '-c:v', vcodec,
+            '-crf', str(crf),
+            '-c:a', acodec,
+            output_path
+        ]
+        run_cmd(ffmpeg_cmd, f"Error trimming video {input_path}")
+        print(f"Trimmed video created: {output_path}")
+    else:
+        # トリミングの必要がない場合は単純にコピー
+        shutil.copy2(input_path, output_path)
+        print(f"No trimming needed, copied video: {output_path}")
 
 
 def apply_audio_fade(input_path, output_path, fade_duration, quiet=False, acodec='aac'):
     """オーディオにフェードイン/アウトを適用"""
-    video_duration = get_video_duration(input_path, quiet=quiet)
-    fade_filter = f"afade=t=in:ss=0:d={fade_duration}, afade=t=out:st={video_duration-fade_duration}:d={fade_duration}"
-    print(f"Applying audio fade: input={input_path}, output={output_path}, fade_duration={fade_duration}, video_duration={video_duration}")
-    print(f"Using filter: {fade_filter}")
-    ffmpeg_cmd = build_ffmpeg_cmd(quiet) + ['-i', input_path, '-af', fade_filter, '-c:v', 'copy', '-c:a', acodec, output_path]
-    run_cmd(ffmpeg_cmd, f"Error applying audio effects to {input_path}")
-    print(f"Applied audio fade successfully: {output_path}")
+    if fade_duration > 0:
+        video_duration = get_video_duration(input_path, quiet=quiet)
+        fade_filter = f"afade=t=in:ss=0:d={fade_duration}, afade=t=out:st={video_duration-fade_duration}:d={fade_duration}"
+        print(f"Applying audio fade: input={input_path}, output={output_path}, fade_duration={fade_duration}, video_duration={video_duration}")
+        print(f"Using filter: {fade_filter}")
+        ffmpeg_cmd = build_ffmpeg_cmd(quiet) + ['-i', input_path, '-af', fade_filter, '-c:v', 'copy', '-c:a', acodec, output_path]
+        run_cmd(ffmpeg_cmd, f"Error applying audio effects to {input_path}")
+        print(f"Applied audio fade successfully: {output_path}")
+    else:
+        shutil.copy2(input_path, output_path)
+        print(f"No audio fade needed, copied video: {output_path}")
 
 
 def concat_videos(input_paths, output_path, quiet=False):
@@ -199,16 +208,13 @@ def interval_cut_video(args):
     while start < duration:
         print()
         concat_file, out_file, temp_cut_file, temp_trim_file, temp_concat_file = generate_output_temp_filename(args.video_path, args.output_dir, start)
-        with tempfile.TemporaryDirectory(dir=args.output_dir) as tmp_dir:
+        with tempfile.TemporaryDirectory(dir=args.output_dir, delete=True) as tmp_dir:
             temp_cut_path = os.path.join(tmp_dir, temp_cut_file)
             temp_trim_path = os.path.join(tmp_dir, temp_trim_file)
 
             cut_video(args.video_path, start, args.time, temp_cut_path, quiet=args.quiet)
-            if args.audio_fade_duration > 0:
-                trim_video(temp_cut_path, temp_trim_path, quiet=args.quiet, vcodec=args.vcodec, crf=args.crf, acodec=args.acodec)
-                apply_audio_fade(temp_trim_path, out_file, args.audio_fade_duration, quiet=args.quiet, acodec=args.acodec)
-            else:
-                trim_video(temp_cut_path, out_file, quiet=args.quiet, vcodec=args.vcodec, crf=args.crf, acodec=args.acodec)
+            trim_video(temp_cut_path, temp_trim_path, quiet=args.quiet, vcodec=args.vcodec, crf=args.crf, acodec=args.acodec)
+            apply_audio_fade(temp_trim_path, out_file, args.audio_fade_duration, quiet=args.quiet, acodec=args.acodec)
 
         out_files.append(out_file)
 
